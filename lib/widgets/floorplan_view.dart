@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../providers/device_providers.dart';
-import '../providers/floorplan_providers.dart';
+import '../providers/devices_provider.dart';
+import '../providers/floorplan_provider.dart';
 
 class FloorplanView extends ConsumerWidget {
   const FloorplanView({super.key});

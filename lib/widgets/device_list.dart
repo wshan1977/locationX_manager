@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../providers/device_providers.dart';
+import '../providers/devices_provider.dart';
 import '../models/device.dart';
 
 class DeviceList extends ConsumerStatefulWidget {
@@ -12,6 +12,34 @@ class DeviceList extends ConsumerStatefulWidget {
 
 class _DeviceListState extends ConsumerState<DeviceList> {
   String query = '';
+
+  Future<void> _confirmResetAll(BuildContext context, VoidCallback onYes) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('모두 되돌리기'),
+          content: const Text(
+            '모든 장비를 “미설정(작업 큐)” 상태로 되돌리고\n'
+                '평면도 위치(핀)도 모두 삭제합니다.\n\n'
+                '진행할까요?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('취소'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('되돌리기'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (ok == true) onYes();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,13 +66,39 @@ class _DeviceListState extends ConsumerState<DeviceList> {
       }
     }
 
+    final unconfCount =
+        devices.where((d) => d.status == DeviceStatus.onlineUnconfigured).length;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('장비 목록(관리자)', style: Theme.of(context).textTheme.titleMedium),
+            // ✅ 상단 헤더 + 전체 되돌리기 버튼
+            Row(
+              children: [
+                Text('장비 목록(관리자)', style: Theme.of(context).textTheme.titleMedium),
+                const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    _confirmResetAll(context, () {
+                      notifier.resetAllToUnconfigured();
+
+                      // 선택/임시 핀도 같이 초기화(혼란 방지)
+                      ref.read(selectedDeviceIdProvider.notifier).state = null;
+                      ref.read(tempFloorPosProvider.notifier).state = null;
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('전체 되돌리기 완료 (미설정: ${unconfCount} → ${devices.length})')),
+                      );
+                    });
+                  },
+                  icon: const Icon(Icons.restart_alt),
+                  label: const Text('모두 되돌리기'),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
 
             TextField(
@@ -91,7 +145,6 @@ class _DeviceListState extends ConsumerState<DeviceList> {
                           onPressed: (d.status == DeviceStatus.onlineConfigured)
                               ? () {
                             notifier.setUnconfigured(d.id);
-                            // 재설정했으면 그 장비를 선택 상태로 유지
                             ref.read(selectedDeviceIdProvider.notifier).state = d.id;
                             ref.read(tempFloorPosProvider.notifier).state = null;
 

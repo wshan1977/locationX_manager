@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../providers/device_providers.dart';
+import '../providers/devices_provider.dart';
 
 class TaskCard extends ConsumerWidget {
   const TaskCard({super.key});
