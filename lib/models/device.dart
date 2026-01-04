@@ -8,13 +8,19 @@ class Device {
   final String hostname;
   final String ip;
   final String fw;
+
+  /// UI 표시용 LED 상태
   final LedState ledState;
+
+  /// ledState==blink 일 때 아이콘 ON/OFF 토글에 사용
+  final bool blinkPhase;
 
   const Device({
     required this.hostname,
     required this.ip,
     required this.fw,
     this.ledState = LedState.off,
+    this.blinkPhase = true,
   });
 
   /// Dashboard 호환
@@ -25,12 +31,14 @@ class Device {
     String? ip,
     String? fw,
     LedState? ledState,
+    bool? blinkPhase,
   }) {
     return Device(
       hostname: hostname ?? this.hostname,
       ip: ip ?? this.ip,
       fw: fw ?? this.fw,
       ledState: ledState ?? this.ledState,
+      blinkPhase: blinkPhase ?? this.blinkPhase,
     );
   }
 
@@ -46,7 +54,8 @@ class Device {
       hostname: (msg['hostname'] ?? msg['device'] ?? 'UNKNOWN').toString(),
       ip: (msg['ip'] ?? fromAddr).toString(),
       fw: (msg['ver'] ?? 'unknown').toString(),
-      ledState: LedState.off, // discover 시 기본 OFF
+      ledState: LedState.off,
+      blinkPhase: true,
     );
   }
 }

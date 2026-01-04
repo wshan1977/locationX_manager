@@ -21,16 +21,16 @@ class Dashboard extends ConsumerWidget {
     return "${(d / 60000).toStringAsFixed(1)}m";
   }
 
-  Widget _ledIcon(LedState state) {
-    switch (state) {
-      case LedState.on:
-        return const Icon(Icons.circle, color: Colors.green);
-      case LedState.blink:
-        return const Icon(Icons.circle, color: Colors.orange);
-      case LedState.off:
-      default:
-        return const Icon(Icons.circle_outlined, color: Colors.grey);
+  Widget _ledIcon(Device d) {
+    // BLINK일 때는 blinkPhase로 아이콘을 숨겼다 보였다 함(깜박임)
+    if (d.ledState == LedState.blink) {
+      if (!d.blinkPhase) return const SizedBox(width: 24);
+      return const Icon(Icons.circle, color: Colors.orange);
     }
+    if (d.ledState == LedState.on) {
+      return const Icon(Icons.circle, color: Colors.green);
+    }
+    return const Icon(Icons.circle_outlined, color: Colors.grey);
   }
 
   @override
@@ -206,7 +206,7 @@ class Dashboard extends ConsumerWidget {
                                 style: const TextStyle(fontWeight: FontWeight.w600),
                               ),
                               subtitle: Text("IP: ${d.ip}   |   FW: ${d.fw}"),
-                              trailing: _ledIcon(d.ledState),
+                              trailing: _ledIcon(d),
                               onTap: () => ref.read(selectedDeviceIdProvider.notifier).state = d.deviceId,
                             );
                           },
@@ -220,11 +220,10 @@ class Dashboard extends ConsumerWidget {
 
             const SizedBox(width: 16),
 
-            // RIGHT: panels
+            // RIGHT
             Expanded(
               child: Column(
                 children: [
-                  // Current task card (간단 유지)
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(12),
@@ -260,14 +259,10 @@ class Dashboard extends ConsumerWidget {
                               SizedBox(
                                 width: 220,
                                 child: FilledButton(
-                                  onPressed: device == null
+                                  onPressed: (device == null || st.busy)
                                       ? null
-                                      : () {
-                                    // UI 상태만 우선 반영 (실제 UDP 전송은 identify()에서 다음 단계로)
-                                    ctrl.updateLedState(device.deviceId, LedState.blink);
-                                    ctrl.identify(device.deviceId);
-                                  },
-                                  child: const Text("Identify (LED 점멸)"),
+                                      : () => ctrl.identify(device.deviceId),
+                                  child: Text(st.busy ? "처리중..." : "Identify (LED 점멸)"),
                                 ),
                               ),
                               const SizedBox(height: 10),
@@ -286,7 +281,6 @@ class Dashboard extends ConsumerWidget {
                       ),
                     ),
                   ),
-
                   const SizedBox(height: 12),
 
                   Expanded(
