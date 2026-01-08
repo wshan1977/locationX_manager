@@ -217,16 +217,5 @@ class DevicesProvider extends ChangeNotifier {
   void nextUnconfigured() {}
   Future<void> resetAll() async {}
 }
-/// ✅ 선택된 장비 객체를 IP 기준으로 찾아서 제공
-final selectedDeviceProvider = Provider<Device?>((ref) {
-  final ctrl = ref.watch(devicesControllerProvider);
-  final selectedIp = ref.watch(selectedDeviceIdProvider);
 
-  if (selectedIp == null) return null;
-
-  for (final d in ctrl.devices) {
-    if (d.ip == selectedIp) return d;
-  }
-  return null;
-});
 
