@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/device.dart';
 import '../services/udp_discovery.dart';
 import '../services/udp_led_sender.dart';
+import '../services/udp_mqtt_config.dart';
 
 /// Dashboard에서 사용하는 provider 이름 유지
 final devicesControllerProvider =
@@ -206,6 +207,162 @@ class DevicesProvider extends ChangeNotifier {
       }
 
       notifyListeners();
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  // -----------------------------
+  // ✅ MQTT(UDP) 설정
+  // -----------------------------
+  Future<Map<String, dynamic>> setMqttUdp({
+    required String ip,
+    required String brokerHost,
+    required int brokerPort,
+  }) async {
+    final idx = _devices.indexWhere((d) => d.ip == ip);
+    if (idx < 0) {
+      return {
+        'type': 'MQTT_SET_RESPONSE',
+        'ok': false,
+        'error': 'device_not_found',
+        'broker_host': brokerHost,
+        'broker_port': brokerPort,
+      };
+    }
+
+    final mqtt = const UdpMqttConfigService(port: 40010);
+
+    try {
+      _busy = true;
+      _lastError = null;
+      notifyListeners();
+
+      final resp = await mqtt.setMqtt(
+        targetIp: ip,
+        brokerHost: brokerHost,
+        brokerPort: brokerPort,
+      );
+
+      // 응답을 기반으로 UI에 현재값을 반영
+      final ok = (resp['ok'] == true);
+      if (ok) {
+        final h = (resp['broker_host'] ?? resp['host'] ?? '').toString().trim();
+        final pRaw = resp['broker_port'] ?? resp['port'];
+        int? p;
+        if (pRaw is num) p = pRaw.toInt();
+        if (pRaw is String) p = int.tryParse(pRaw);
+
+        final d = _devices[idx];
+        _devices[idx] = d.copyWith(
+          mqttHost: h.isEmpty ? d.mqttHost : h,
+          mqttPort: (p != null && p > 0 && p <= 65535) ? p : d.mqttPort,
+        );
+        notifyListeners();
+      }
+
+      return resp;
+    } catch (e) {
+      _lastError = e.toString();
+      notifyListeners();
+      return {
+        'type': 'MQTT_SET_RESPONSE',
+        'ok': false,
+        'error': e.toString(),
+        'broker_host': brokerHost,
+        'broker_port': brokerPort,
+      };
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  // -----------------------------
+  // ✅ Reboot (UDP)
+  // -----------------------------
+  Future<Map<String, dynamic>> rebootUdp({
+    required String ip,
+    int delaySec = 2,
+    String reason = 'ui',
+  }) async {
+    final idx = _devices.indexWhere((d) => d.ip == ip);
+    if (idx < 0) {
+      return {
+        'type': 'REBOOT_RESPONSE',
+        'ok': false,
+        'error': 'device_not_found',
+        'delay_sec': delaySec,
+        'reason': reason,
+      };
+    }
+
+    final svc = const UdpMqttConfigService(port: 40010);
+
+    try {
+      _busy = true;
+      _lastError = null;
+      notifyListeners();
+
+      return await svc.reboot(
+        targetIp: ip,
+        delaySec: delaySec,
+        reason: reason,
+      );
+    } catch (e) {
+      _lastError = e.toString();
+      notifyListeners();
+      return {
+        'type': 'REBOOT_RESPONSE',
+        'ok': false,
+        'error': e.toString(),
+        'delay_sec': delaySec,
+        'reason': reason,
+      };
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  // -----------------------------
+  // ✅ AOA Service Restart (UDP)
+  // -----------------------------
+  Future<Map<String, dynamic>> restartAoaServiceUdp({
+    required String ip,
+    String serviceName = 'aoa-antenna.service',
+  }) async {
+    final idx = _devices.indexWhere((d) => d.ip == ip);
+    if (idx < 0) {
+      return {
+        'type': 'SERVICE_RESTART_RESPONSE',
+        'ok': false,
+        'error': 'device_not_found',
+        'service': serviceName,
+      };
+    }
+
+    final svc = const UdpMqttConfigService(port: 40010);
+
+    try {
+      _busy = true;
+      _lastError = null;
+      notifyListeners();
+
+      return await svc.restartService(
+        targetIp: ip,
+        serviceName: serviceName,
+      );
+    } catch (e) {
+      _lastError = e.toString();
+      notifyListeners();
+      return {
+        'type': 'SERVICE_RESTART_RESPONSE',
+        'ok': false,
+        'error': e.toString(),
+        'service': serviceName,
+      };
     } finally {
       _busy = false;
       notifyListeners();

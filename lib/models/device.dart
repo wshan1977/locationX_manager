@@ -13,6 +13,11 @@ class Device {
   /// 없을 수도 있으니 nullable로 둠
   final String? mac;
 
+  /// Discover 응답에 포함되는 현재 적용된 MQTT(UDP) 브로커 정보
+  /// - 장비에서 확인 불가하면 null
+  final String? mqttHost;
+  final int? mqttPort;
+
   /// UI 표시용 LED 상태
   final LedState ledState;
 
@@ -24,6 +29,8 @@ class Device {
     required this.ip,
     required this.fw,
     this.mac,
+    this.mqttHost,
+    this.mqttPort,
     this.ledState = LedState.off,
     this.blinkPhase = true,
   });
@@ -45,6 +52,8 @@ class Device {
     String? ip,
     String? fw,
     String? mac,
+    String? mqttHost,
+    int? mqttPort,
     LedState? ledState,
     bool? blinkPhase,
   }) {
@@ -53,6 +62,8 @@ class Device {
       ip: ip ?? this.ip,
       fw: fw ?? this.fw,
       mac: mac ?? this.mac,
+      mqttHost: mqttHost ?? this.mqttHost,
+      mqttPort: mqttPort ?? this.mqttPort,
       ledState: ledState ?? this.ledState,
       blinkPhase: blinkPhase ?? this.blinkPhase,
     );
@@ -70,11 +81,31 @@ class Device {
     final rawMac = (msg['mac'] ?? '').toString().trim();
     final mac = (rawMac.isEmpty || rawMac == 'MAC_ERR') ? null : rawMac;
 
+    // mqtt: { mode: 'UDP', host: '...', port: 1883 } 형태를 기대
+    String? mqttHost;
+    int? mqttPort;
+    final mqtt = msg['mqtt'];
+    if (mqtt is Map) {
+      final h = (mqtt['host'] ?? '').toString().trim();
+      if (h.isNotEmpty) mqttHost = h;
+      final p = mqtt['port'];
+      if (p is num) {
+        mqttPort = p.toInt();
+      } else if (p is String) {
+        mqttPort = int.tryParse(p);
+      }
+      if (mqttPort != null && (mqttPort! <= 0 || mqttPort! > 65535)) {
+        mqttPort = null;
+      }
+    }
+
     return Device(
       hostname: (msg['hostname'] ?? msg['device'] ?? 'UNKNOWN').toString(),
       ip: (msg['ip'] ?? fromAddr).toString(),
       fw: (msg['ver'] ?? 'unknown').toString(),
       mac: mac,
+      mqttHost: mqttHost,
+      mqttPort: mqttPort,
       ledState: LedState.off,
       blinkPhase: true,
     );

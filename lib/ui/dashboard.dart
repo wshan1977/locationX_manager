@@ -1,4 +1,5 @@
-import 'dart:convert';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,1035 +7,953 @@ import '../models/device.dart';
 import '../providers/devices_provider.dart';
 import '../providers/selected_device_provider.dart';
 
-import '../providers/app_mode_provider.dart';
-import '../providers/engineer_password_provider.dart';
-
-import '../services/config_web_api.dart';
-
-import 'config_panel.dart';
-
-class Dashboard extends ConsumerWidget {
+/// LocationX Manager (Windows)
+/// - 전문 설정 프로그램 느낌의 "Settings" 레이아웃
+/// - 좌측: Discover/Device 목록
+/// - 우측: 선택 장비 상세 + (MQTT / Actions / Details) 탭
+class Dashboard extends ConsumerStatefulWidget {
   const Dashboard({super.key});
 
-  Widget _ledIcon(Device d) {
-    if (d.ledState == LedState.blink) {
-      if (!d.blinkPhase) return const SizedBox(width: 24);
-      return const Icon(Icons.circle, color: Colors.orange);
-    }
-    if (d.ledState == LedState.on) {
-      return const Icon(Icons.circle, color: Colors.green);
-    }
-    return const Icon(Icons.circle_outlined, color: Colors.grey);
-  }
+  @override
+  ConsumerState<Dashboard> createState() => _DashboardState();
+}
 
-  Future<bool> _askEngineerPassword(BuildContext context, WidgetRef ref) async {
-    final saved = ref.read(engineerPasswordProvider);
-    final ctrl = TextEditingController();
+class _DashboardState extends ConsumerState<Dashboard> with TickerProviderStateMixin {
+  late final TabController _tabs;
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _search = '';
 
-    return await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('엔지니어 모드'),
-        content: TextField(
-          controller: ctrl,
-          obscureText: true,
-          decoration: const InputDecoration(
-            labelText: '비밀번호',
-            hintText: '기본 1234',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (ctrl.text == saved) Navigator.pop(context, true);
-            },
-            child: const Text('확인'),
-          ),
-        ],
-      ),
-    ) ??
-        false;
-  }
+  // MQTT
+  final TextEditingController _mqttHostCtrl = TextEditingController();
+  final TextEditingController _mqttPortCtrl = TextEditingController(text: '1883');
 
-  void _changeEngineerPassword(BuildContext context, WidgetRef ref) {
-    final current = ref.read(engineerPasswordProvider);
-    final oldCtrl = TextEditingController();
-    final newCtrl = TextEditingController();
+  // Actions
+  final TextEditingController _rebootDelayCtrl = TextEditingController(text: '2');
 
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('비밀번호 변경'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: oldCtrl,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: '현재 비밀번호'),
-            ),
-            TextField(
-              controller: newCtrl,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: '새 비밀번호'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('취소'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (oldCtrl.text == current && newCtrl.text.isNotEmpty) {
-                ref.read(engineerPasswordProvider.notifier).state = newCtrl.text;
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('비밀번호가 변경되었습니다.')),
-                );
-              }
-            },
-            child: const Text('저장'),
-          ),
-        ],
-      ),
-    );
-  }
+  String? _status;
+  String? _lastSelectedIp;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final mode = ref.watch(appModeProvider);
-    final st = ref.watch(devicesControllerProvider);
-    final ctrl = ref.read(devicesControllerProvider.notifier);
-    final selectedDevice = ref.watch(selectedDeviceProvider);
-
-    final cs = Theme.of(context).colorScheme;
-
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: cs.primary,
-        foregroundColor: cs.onPrimary,
-        title: Text(
-          mode == AppMode.installer
-              ? "LocationX Windows (Installer)"
-              : "LocationX Windows (Engineer)",
-        ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: Center(child: Text("Devices: ${st.devices.length}")),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Consumer(builder: (context, ref, _) {
-              final m = ref.watch(appModeProvider);
-              return FilledButton.tonalIcon(
-                icon: Icon(m == AppMode.engineer ? Icons.lock_open : Icons.lock),
-                label: Text(m == AppMode.engineer ? "설치자 모드" : "엔지니어 모드"),
-                onPressed: () async {
-                  if (m == AppMode.engineer) {
-                    ref.read(appModeProvider.notifier).state = AppMode.installer;
-                    return;
-                  }
-                  final ok = await _askEngineerPassword(context, ref);
-                  if (ok) ref.read(appModeProvider.notifier).state = AppMode.engineer;
-                },
-              );
-            }),
-          ),
-          if (mode == AppMode.engineer)
-            IconButton(
-              tooltip: '비밀번호 변경',
-              onPressed: () => _changeEngineerPassword(context, ref),
-              icon: const Icon(Icons.password),
-            ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            // LEFT
-            SizedBox(
-              width: 440,
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          FilledButton.icon(
-                            onPressed: (st.discovering || st.busy)
-                                ? null
-                                : () => ctrl.discover(),
-                            icon: const Icon(Icons.radar),
-                            label: Text(st.discovering ? "Discovering..." : "Discover (UDP)"),
-                          ),
-                          const SizedBox(width: 10),
-                          OutlinedButton(
-                            onPressed: st.devices.isEmpty
-                                ? null
-                                : () {
-                              ctrl.clearDevices();
-                              ref.read(selectedDeviceIdProvider.notifier).state = null;
-                            },
-                            child: const Text("Clear"),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      if (st.error != null)
-                        Text(st.error!, style: const TextStyle(color: Colors.red)),
-                      const SizedBox(height: 10),
-
-                      Expanded(
-                        child: st.devices.isEmpty
-                            ? const Center(
-                          child: Text(
-                            "Discover를 누르면 같은 LAN의 LocationX 장비가 UDP로 응답합니다.\n"
-                                "표시: hostname / ip / fw / mac / led",
-                            textAlign: TextAlign.center,
-                          ),
-                        )
-                            : ListView.separated(
-                          itemCount: st.devices.length,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (context, i) {
-                            final d = st.devices[i];
-                            final selected = (selectedDevice?.ip == d.ip);
-                            final macLabel = (d.mac == null || d.mac!.isEmpty) ? "N/A" : d.mac!;
-                            return ListTile(
-                              key: ValueKey(d.ip),
-                              dense: true,
-                              selected: selected,
-                              title: Text(
-                                d.hostname,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontWeight: FontWeight.w600),
-                              ),
-                              subtitle: Text(
-                                "IP: ${d.ip} | MAC: $macLabel | FW: ${d.fw}",
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              trailing: _ledIcon(d),
-                              onTap: () {
-                                ref.read(selectedDeviceIdProvider.notifier).state = d.ip;
-                              },
-                            );
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
-            const SizedBox(width: 16),
-
-            // RIGHT
-            Expanded(
-              child: mode == AppMode.installer
-                  ? _InstallerTabs(selectedDevice: selectedDevice, st: st, ctrl: ctrl)
-                  : _EngineerPanel(selectedDevice: selectedDevice, st: st, ctrl: ctrl),
-            ),
-          ],
-        ),
-      ),
-    );
+  void initState() {
+    super.initState();
+    _tabs = TabController(length: 3, vsync: this);
+    _searchCtrl.addListener(() {
+      final s = _searchCtrl.text.trim();
+      if (s == _search) return;
+      setState(() => _search = s);
+    });
   }
-}
-
-// =====================================================
-// Engineer panel
-// =====================================================
-class _EngineerPanel extends StatelessWidget {
-  final Device? selectedDevice;
-  final dynamic st;
-  final dynamic ctrl;
-
-  const _EngineerPanel({
-    required this.selectedDevice,
-    required this.st,
-    required this.ctrl,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final d = selectedDevice;
-
-    return ListView(
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: d == null
-                ? const Text("왼쪽에서 장비를 선택하세요.")
-                : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: _SelectedDeviceInfo(d: d)),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 220,
-                  child: FilledButton(
-                    onPressed: st.busy ? null : () => ctrl.identify(d.ip),
-                    child: Text(st.busy ? "처리중..." : "Identify (LED 점멸)"),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(height: 720, child: const ConfigPanel()),
-      ],
-    );
-  }
-}
-
-class _SelectedDeviceInfo extends StatelessWidget {
-  final Device d;
-  const _SelectedDeviceInfo({required this.d});
-
-  @override
-  Widget build(BuildContext context) {
-    final macLabel = (d.mac == null || d.mac!.isEmpty) ? "N/A" : d.mac!;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text("선택 장비", style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 8),
-        Text("Hostname: ${d.hostname}", maxLines: 1, overflow: TextOverflow.ellipsis),
-        Text("IP: ${d.ip}", maxLines: 1, overflow: TextOverflow.ellipsis),
-        Text("MAC: $macLabel", maxLines: 1, overflow: TextOverflow.ellipsis),
-        Text("FW: ${d.fw}", maxLines: 1, overflow: TextOverflow.ellipsis),
-      ],
-    );
-  }
-}
-
-// =====================================================
-// Installer: Tabs + Arrow nav + Multi-locator coordinate input
-// 탭 순서: 불러오기 -> 설치방식 -> 좌표입력 -> MQTT설정 -> 적용
-// =====================================================
-class _LocatorRow {
-  String id; // ble-pd-xxxx
-  double x, y, z;
-  double ox, oy, oz; // orientation
-  _LocatorRow({
-    required this.id,
-    required this.x,
-    required this.y,
-    required this.z,
-    required this.ox,
-    required this.oy,
-    required this.oz,
-  });
-}
-
-class _InstallerTabs extends StatefulWidget {
-  final Device? selectedDevice;
-  final dynamic st;
-  final dynamic ctrl;
-
-  const _InstallerTabs({
-    required this.selectedDevice,
-    required this.st,
-    required this.ctrl,
-  });
-
-  @override
-  State<_InstallerTabs> createState() => _InstallerTabsState();
-}
-
-class _InstallerTabsState extends State<_InstallerTabs> {
-  final api = const ConfigWebApi(port: 8080);
-
-  final mqttIpCtrl = TextEditingController();
-  final mqttPortCtrl = TextEditingController(text: '1883');
-
-  String installMode = 'multiple'; // single/multiple
-  bool working = false;
-  String? msg;
-
-  String locatorJson = '';
-  String positioningJson = '';
-  String mqttText = '';
-
-  // multi locator inputs
-  int locatorCount = 4;
-  final List<_LocatorRow> rows = [
-    _LocatorRow(id: 'ble-pd-REPLACE_ME_1', x: 0, y: 0, z: 3, ox: 0, oy: 180, oz: 90),
-    _LocatorRow(id: 'ble-pd-REPLACE_ME_2', x: 3, y: 0, z: 3, ox: 0, oy: 180, oz: 90),
-    _LocatorRow(id: 'ble-pd-REPLACE_ME_3', x: 2, y: -1, z: 3, ox: 0, oy: 180, oz: 90),
-    _LocatorRow(id: 'ble-pd-REPLACE_ME_4', x: 2, y: -2, z: 3, ox: 0, oy: 180, oz: 90),
-  ];
-
-  late final TabController _tabCtrl;
-  final _tabIdx = ValueNotifier<int>(0);
 
   @override
   void dispose() {
-    mqttIpCtrl.dispose();
-    mqttPortCtrl.dispose();
-    _tabIdx.dispose();
+    _tabs.dispose();
+    _searchCtrl.dispose();
+    _mqttHostCtrl.dispose();
+    _mqttPortCtrl.dispose();
+    _rebootDelayCtrl.dispose();
     super.dispose();
   }
 
-  // ---------- Arrow nav ----------
-  Widget _navArrows() {
-    return Row(
-      children: [
-        IconButton(
-          tooltip: '이전',
-          onPressed: _tabIdx.value <= 0
-              ? null
-              : () => DefaultTabController.of(context).animateTo(_tabIdx.value - 1),
-          icon: const Icon(Icons.arrow_back),
+  // -------------------------
+  // UI helpers
+  // -------------------------
+  Widget _micaCard({
+    required Widget child,
+    EdgeInsets padding = const EdgeInsets.all(16),
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          decoration: BoxDecoration(
+            color: cs.surface.withOpacity(0.78),
+            border: Border.all(color: cs.outlineVariant.withOpacity(0.35)),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          padding: padding,
+          child: child,
         ),
-        const SizedBox(width: 4),
-        IconButton(
-          tooltip: '다음',
-          onPressed: _tabIdx.value >= 4
-              ? null
-              : () => DefaultTabController.of(context).animateTo(_tabIdx.value + 1),
-          icon: const Icon(Icons.arrow_forward),
-        ),
-        const Spacer(),
-        if (working) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-        const SizedBox(width: 8),
-        Text(working ? 'Working...' : ''),
-      ],
+      ),
     );
   }
 
-  // ---------- Load ----------
-  Future<void> _loadFromPi() async {
-    final d = widget.selectedDevice;
-    if (d == null) {
-      setState(() => msg = '장비를 먼저 선택하세요.');
-      return;
-    }
-
-    setState(() {
-      working = true;
-      msg = null;
-    });
-
-    try {
-      // ✅ UI 멈춤 체감 줄이기: 6초 타임아웃
-      final data = await api.load(d.ip).timeout(const Duration(seconds: 6));
-
-      mqttText = (data['mqtt'] ?? '');
-      locatorJson = (data['locator'] ?? '');
-      positioningJson = (data['positioning'] ?? '');
-
-      final host = _pickKv(mqttText, 'BROKER_HOST');
-      final port = _pickKv(mqttText, 'BROKER_PORT');
-      if (host != null) mqttIpCtrl.text = host;
-      if (port != null) mqttPortCtrl.text = port;
-
-      // positioning에서 locators가 있으면 UI 테이블로도 반영
-      _tryParseLocatorsFromPositioning(positioningJson);
-
-      if (!mounted) return;
-      setState(() => msg = '불러오기 완료 (BROKER_HOST=${mqttIpCtrl.text})');
-
-      // ✅ 불러오기 성공하면 다음 탭으로 자동 이동 (원하면 유지/삭제 가능)
-      DefaultTabController.of(context).animateTo(1);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => msg = 'Load 실패(Timeout/Parse): $e');
-    } finally {
-      if (!mounted) return;
-      setState(() => working = false);
-    }
+  Widget _statusChip(Device? d) {
+    final cs = Theme.of(context).colorScheme;
+    final host = (d?.mqttHost ?? '').trim();
+    final port = d?.mqttPort;
+    final ok = host.isNotEmpty && port != null;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: ok ? cs.primaryContainer.withOpacity(0.65) : cs.surfaceContainerHighest.withOpacity(0.55),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant.withOpacity(0.35)),
+      ),
+      child: Text(
+        ok ? 'MQTT(UDP): $host:$port' : 'MQTT(UDP): 확인안됨',
+        style: Theme.of(context).textTheme.labelMedium,
+      ),
+    );
   }
 
-  // ---------- Apply ----------
-  Future<void> _saveApplyToPi() async {
-    final d = widget.selectedDevice;
-    if (d == null) {
-      setState(() => msg = '장비를 먼저 선택하세요.');
-      return;
+  Widget _ledIndicator(Device d) {
+    if (d.ledState == LedState.blink) {
+      if (!d.blinkPhase) return const SizedBox(width: 18, height: 18);
+      return const Icon(Icons.circle, color: Colors.orange, size: 16);
     }
-
-    final brokerIp = mqttIpCtrl.text.trim();
-    final brokerPort = mqttPortCtrl.text.trim();
-
-    if (brokerIp.isEmpty) {
-      setState(() => msg = 'MQTT 서버 IP를 입력하세요.');
-      return;
+    if (d.ledState == LedState.on) {
+      return const Icon(Icons.circle, color: Colors.green, size: 16);
     }
-
-    setState(() {
-      working = true;
-      msg = null;
-    });
-
-    try {
-      // 1) 현재 서버 내용 로드(안전)
-      final data = await api.load(d.ip).timeout(const Duration(seconds: 6));
-      final oldMqtt = (data['mqtt'] ?? '');
-
-      // 2) mqtt 갱신(중복 키 제거 후 삽입)
-      var newMqtt = _removeAllKeys(oldMqtt, {'BROKER_HOST', 'BROKER_PORT'});
-      newMqtt = _ensureEndsWithNewline(newMqtt);
-      newMqtt += 'BROKER_HOST=$brokerIp\n';
-      newMqtt += 'BROKER_PORT=$brokerPort\n';
-
-      // 3) JSON 결정
-      final useLocator = (installMode == 'single') ? (locatorJson.isNotEmpty ? locatorJson : _defaultSingleLocatorJson()) : locatorJson;
-      final usePositioning = (installMode == 'multiple') ? _buildPositioningJsonFromRows() : positioningJson;
-
-      // 4) Save + Apply
-      await api.save(ip: d.ip, mqtt: newMqtt, locator: useLocator, positioning: usePositioning);
-      await api.apply(d.ip);
-
-      // 5) 검증
-      final verify = await api.load(d.ip).timeout(const Duration(seconds: 6));
-      final vMqtt = verify['mqtt'] ?? '';
-      final vHost = _pickKv(vMqtt, 'BROKER_HOST');
-      final vPort = _pickKv(vMqtt, 'BROKER_PORT');
-
-      if (!mounted) return;
-      setState(() => msg = '적용 완료. (Pi: BROKER_HOST=$vHost, BROKER_PORT=$vPort)');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => msg = '적용 실패: $e');
-    } finally {
-      if (!mounted) return;
-      setState(() => working = false);
-    }
+    return const Icon(Icons.circle_outlined, color: Colors.grey, size: 16);
   }
 
-  // ---------- Multi-locator UI helpers ----------
-  void _setLocatorCount(int n) {
-    setState(() {
-      locatorCount = n;
-      while (rows.length < n) {
-        final idx = rows.length + 1;
-        rows.add(_LocatorRow(
-          id: 'ble-pd-REPLACE_ME_$idx',
-          x: 0,
-          y: 0,
-          z: 3,
-          ox: 0,
-          oy: 180,
-          oz: 90,
-        ));
-      }
-      while (rows.length > n) {
-        rows.removeLast();
-      }
-    });
-  }
-
-  void _tryParseLocatorsFromPositioning(String positioningText) {
-    try {
-      final obj = jsonDecode(positioningText);
-      if (obj is! Map<String, dynamic>) return;
-      final locs = obj['locators'];
-      if (locs is! List) return;
-
-      final parsed = <_LocatorRow>[];
-      for (final it in locs) {
-        if (it is! Map) continue;
-        final id = (it['id'] ?? '').toString();
-        final c = it['coordinate'] as Map?;
-        final o = it['orientation'] as Map?;
-        if (c == null || o == null) continue;
-
-        parsed.add(_LocatorRow(
-          id: id,
-          x: (c['x'] as num?)?.toDouble() ?? 0,
-          y: (c['y'] as num?)?.toDouble() ?? 0,
-          z: (c['z'] as num?)?.toDouble() ?? 3,
-          ox: (o['x'] as num?)?.toDouble() ?? 0,
-          oy: (o['y'] as num?)?.toDouble() ?? 180,
-          oz: (o['z'] as num?)?.toDouble() ?? 90,
-        ));
-      }
-
-      if (parsed.isNotEmpty) {
-        locatorCount = parsed.length;
-        rows
-          ..clear()
-          ..addAll(parsed);
-      }
-    } catch (_) {
-      // ignore
-    }
-  }
-
-  String _defaultSingleLocatorJson() {
-    // 필요하면 여기 기본값을 네가 원하는 single 템플릿으로 바꿔도 됨
-    return const JsonEncoder.withIndent('   ').convert({
-      "version": 1,
-      "aoxMode": "SL_RTL_AOX_MODE_REAL_TIME_BASIC",
-      "antennaMode": "SL_RTL_AOX_ARRAY_TYPE_4x4_URA",
-      "antennaArray": List.generate(16, (i) => i),
-      "angleFiltering": true,
-      "angleFilteringWeight": 0.6,
-      "angleCorrectionTimeout": 5,
-      "angleCorrectionDelay": 3,
-      "cteMode": "CONNLESS",
-      "cteSamplingInterval": 3,
-      "cteLength": 20,
-      "slotDuration": 1,
-      "reportMode": "ANGLE",
-      "allowList": null,
-      "azimuthMask": null,
-      "elevationMask": null
-    });
-  }
-
-  String _buildPositioningJsonFromRows() {
-    final locators = rows.take(locatorCount).map((r) {
-      return {
-        "id": r.id,
-        "config": {
-          "version": 1,
-          "aoxMode": "SL_RTL_AOD_MODE_REAL_TIME_FAST_RESPONSE",
-          "antennaMode": "SL_RTL_AOX_ARRAY_TYPE_4x4_URA",
-          "antennaArray": null,
-          "angleFiltering": true,
-          "angleFilteringWeight": 0.6,
-          "angleCorrectionTimeout": 5,
-          "angleCorrectionDelay": 1,
-          "cteMode": "SILABS",
-          "periodSamples": 64,
-          "cteSamplingInterval": 1,
-          "cteLength": 160,
-          "slotDuration": 1,
-          "reportMode": "ANGLE",
-          "allowList": [],
-          "azimuthMask": [],
-          "elevationMask": []
-        },
-        "coordinate": {"x": r.x, "y": r.y, "z": r.z},
-        "orientation": {"x": r.ox, "y": r.oy, "z": r.oz}
-      };
+  List<Device> _filtered(List<Device> devices) {
+    final q = _search.toLowerCase();
+    if (q.isEmpty) return devices;
+    return devices.where((d) {
+      final h = d.hostname.toLowerCase();
+      final ip = d.ip.toLowerCase();
+      final mac = (d.mac ?? '').toLowerCase();
+      final mqtt = '${d.mqttHost ?? ''}:${d.mqttPort ?? ''}'.toLowerCase();
+      return h.contains(q) || ip.contains(q) || mac.contains(q) || mqtt.contains(q);
     }).toList();
+  }
 
-    final obj = {
-      "version": 1,
-      "id": "positioning-test_room",
-      "estimationModeLocation": "SL_RTL_LOC_ESTIMATION_MODE_THREE_DIM_HIGH_ACCURACY",
-      "validationModeLocation": "SL_RTL_LOC_MEASUREMENT_VALIDATION_FULL",
-      "estimationIntervalSec": 0.02,
-      "locationFiltering": true,
-      "locationFilteringWeight": 0.1,
-      "numberOfSequenceIds": 6,
-      "maximumSequenceIdDiffs": 20,
-      "locators": locators,
-    };
-    return const JsonEncoder.withIndent('   ').convert(obj);
+  void _syncEditorsFromSelected(Device? d) {
+    if (d == null) return;
+    if (_lastSelectedIp == d.ip) return;
+    _lastSelectedIp = d.ip;
+
+    // ✅ 선택 장비가 바뀔 때마다 에디터를 "항상" 동기화
+    // 이전 버전은 mqttHost가 비어있으면 텍스트필드를 비우지 않아
+    // 다른 장비의 값(=예전 IP)이 남아 혼동되는 문제가 생길 수 있음.
+    final h = (d.mqttHost ?? '').trim();
+    _mqttHostCtrl.text = h; // 비어있으면 비우기
+
+    final p = d.mqttPort;
+    if (p != null && p > 0 && p <= 65535) {
+      _mqttPortCtrl.text = p.toString();
+    } else {
+      _mqttPortCtrl.text = '1883';
+    }
+    _status = null;
+  }
+
+  bool _hasPendingMqtt(Device d) {
+    final curHost = (d.mqttHost ?? '').trim();
+    final curPort = d.mqttPort ?? 1883;
+
+    final editHost = _mqttHostCtrl.text.trim();
+    final editPort = int.tryParse(_mqttPortCtrl.text.trim()) ?? 1883;
+
+    return (editHost != curHost) || (editPort != curPort);
+  }
+
+  // -------------------------
+  // Actions
+  // -------------------------
+  Future<void> _discover() async {
+    final ctrl = ref.read(devicesControllerProvider.notifier);
+    await ctrl.discoverUdp();
+  }
+
+  Future<void> _sendMqtt(Device d) async {
+    final host = _mqttHostCtrl.text.trim();
+    final port = int.tryParse(_mqttPortCtrl.text.trim());
+    if (host.isEmpty) {
+      setState(() => _status = 'MQTT 서버(Host)를 입력하세요.');
+      return;
+    }
+    if (port == null || port <= 0 || port > 65535) {
+      setState(() => _status = 'MQTT Port는 1~65535 범위로 입력하세요.');
+      return;
+    }
+
+    final ctrl = ref.read(devicesControllerProvider.notifier);
+    final resp = await ctrl.setMqttUdp(ip: d.ip, brokerHost: host, brokerPort: port);
+
+    final ok = (resp['ok'] == true);
+    final rh = (resp['broker_host'] ?? resp['host'] ?? '').toString().trim();
+    final rp = resp['broker_port'] ?? resp['port'];
+    final rpInt = (rp is num) ? rp.toInt() : int.tryParse(rp?.toString() ?? '');
+
+    setState(() {
+      _status = ok
+          ? '저장 완료 (UDP): ${rh.isEmpty ? host : rh}:${rpInt ?? port}\n적용은 “Restart AOA Service” 또는 Reboot 후 반영됩니다.'
+          : '실패: ${(resp['error'] ?? 'unknown').toString()}';
+    });
+  }
+
+  Future<void> _identify(Device d) async {
+    final ctrl = ref.read(devicesControllerProvider.notifier);
+    await ctrl.identify(d.ip);
+    if (!mounted) return;
+    setState(() => _status = 'Identify 실행: ${d.hostname} (${d.ip})');
+  }
+
+  Future<void> _restartAoaService(Device d) async {
+    // MQTT 탭에서 입력만 바꾸고 저장을 안 한 채로 재시작을 누르면
+    // "예전 IP"로 다시 뜨는 것으로 보일 수 있어서, 먼저 안내/선택 제공.
+    if (_hasPendingMqtt(d)) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('저장되지 않은 MQTT 변경사항'),
+          content: const Text('MQTT 탭에서 입력한 값이 아직 장비에 저장되지 않았습니다.\n\n저장 후 서비스 재시작을 진행할까요?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('취소')),
+            OutlinedButton(onPressed: () => Navigator.pop(context, 'restart_only'), child: const Text('재시작만')),
+            FilledButton(onPressed: () => Navigator.pop(context, 'save_and_restart'), child: const Text('저장 후 재시작')),
+          ],
+        ),
+      );
+
+      if (choice == 'cancel' || choice == null) return;
+
+      if (choice == 'save_and_restart') {
+        await _sendMqtt(d);
+        // 저장 실패면 여기서 멈춤
+        if (!mounted) return;
+        if ((_status ?? '').startsWith('실패')) return;
+      }
+      // restart_only or save_and_restart -> 계속 진행
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('AOA 서비스 재시작'),
+        content: Text('${d.hostname} (${d.ip})\n\nsudo systemctl restart aoa-antenna.service\n\n진행할까요?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('재시작')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    final ctrl = ref.read(devicesControllerProvider.notifier);
+    final resp = await ctrl.restartAoaServiceUdp(ip: d.ip);
+
+    final success = (resp['ok'] == true);
+    final rc = resp['rc']?.toString() ?? '';
+    final err = (resp['err'] ?? resp['error'] ?? '').toString();
+
+    setState(() {
+      _status = success ? 'AOA 서비스 재시작 완료 (rc=$rc)' : 'AOA 서비스 재시작 실패: $err (rc=$rc)';
+    });
+  }
+
+  Future<void> _reboot(Device d) async {
+    final delay = int.tryParse(_rebootDelayCtrl.text.trim()) ?? 2;
+    final applied = delay.clamp(0, 30);
+
+    if (_hasPendingMqtt(d)) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('저장되지 않은 MQTT 변경사항'),
+          content: const Text('MQTT 탭에서 입력한 값이 아직 장비에 저장되지 않았습니다.\n\n저장 후 재부팅을 진행할까요?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('취소')),
+            OutlinedButton(onPressed: () => Navigator.pop(context, 'reboot_only'), child: const Text('재부팅만')),
+            FilledButton(onPressed: () => Navigator.pop(context, 'save_and_reboot'), child: const Text('저장 후 재부팅')),
+          ],
+        ),
+      );
+
+      if (choice == 'cancel' || choice == null) return;
+
+      if (choice == 'save_and_reboot') {
+        await _sendMqtt(d);
+        if (!mounted) return;
+        if ((_status ?? '').startsWith('실패')) return;
+      }
+      // reboot_only or save_and_reboot -> 계속 진행
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('장비 재부팅'),
+        content: Text('${d.hostname} (${d.ip})\n\n재부팅을 실행합니다.\n지연: ${applied}s\n\n진행할까요?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('재부팅')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    final ctrl = ref.read(devicesControllerProvider.notifier);
+    final resp = await ctrl.rebootUdp(ip: d.ip, delaySec: applied, reason: 'ui');
+    final success = (resp['ok'] == true);
+
+    setState(() {
+      _status = success ? '재부팅 예약됨 (UDP): ${d.hostname} - ${applied}s' : '재부팅 실패: ${(resp['error'] ?? 'unknown')}';
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final d = widget.selectedDevice;
-    final canUse = (d != null) && (!working);
+    final st = ref.watch(devicesControllerProvider);
+    final selected = ref.watch(selectedDeviceProvider);
+    _syncEditorsFromSelected(selected);
 
-    return DefaultTabController(
-      length: 5,
-      child: Builder(builder: (ctx) {
-        _tabCtrl = DefaultTabController.of(ctx);
-        _tabCtrl.addListener(() {
-          if (_tabCtrl.indexIsChanging) return;
-          _tabIdx.value = _tabCtrl.index;
-        });
+    final cs = Theme.of(context).colorScheme;
+    final devices = _filtered(st.devices);
 
-        return Column(
-          children: [
-            // 상단: 선택 장비 카드
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: d == null
-                    ? const Text("왼쪽에서 장비를 선택하세요.")
-                    : Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: _SelectedDeviceInfo(d: d)),
-                    const SizedBox(width: 12),
-                    SizedBox(
-                      width: 220,
-                      child: FilledButton(
-                        onPressed: widget.st.busy ? null : () => widget.ctrl.identify(d.ip),
-                        child: Text(widget.st.busy ? "처리중..." : "Identify (LED 점멸)"),
-                      ),
-                    ),
+    return Scaffold(
+      body: Stack(
+        children: [
+          // “바탕화면” 느낌 배경
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    cs.primaryContainer.withOpacity(0.55),
+                    cs.surface,
+                    cs.secondaryContainer.withOpacity(0.25),
                   ],
                 ),
               ),
+              child: const _NoiseOverlay(),
             ),
+          ),
 
-            if (msg != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 6, bottom: 6),
-                child: Text(
-                  msg!,
-                  style: TextStyle(
-                    color: msg!.contains('실패') ? Colors.red : Colors.green,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-
-            // ✅ 화살표 네비게이션 (요구사항 #1)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: ValueListenableBuilder<int>(
-                valueListenable: _tabIdx,
-                builder: (_, __, ___) => _navArrows(),
-              ),
-            ),
-
-            const SizedBox(height: 6),
-
-            // ✅ 탭 순서 변경 (요구사항 #3)
-            const TabBar(
-              isScrollable: true,
-              tabs: [
-                Tab(text: '불러오기'),
-                Tab(text: '설치 방식'),
-                Tab(text: '좌표 입력(다중)'),
-                Tab(text: 'MQTT 설정'),
-                Tab(text: '적용'),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            Expanded(
-              child: TabBarView(
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
                 children: [
-                  // 1) 불러오기
-                  ListView(
-                    padding: const EdgeInsets.all(12),
+                  // Top bar
+                  Row(
                     children: [
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("불러오기 (Pi 서버 GET /)", style: Theme.of(context).textTheme.titleMedium),
-                              const SizedBox(height: 10),
-                              FilledButton.icon(
-                                onPressed: canUse ? _loadFromPi : null,
-                                icon: const Icon(Icons.download),
-                                label: Text(working ? "Loading..." : "Load (GET /)"),
-                              ),
-                              const SizedBox(height: 10),
-                              Text(d == null ? "장비 선택 후 사용할 수 있습니다." : "대상: http://${d.ip}:8080/"),
-                              const SizedBox(height: 10),
-                              const Text("불러오면 mqtt/locator/positioning 텍스트를 가져오고, positioning에 locators가 있으면 좌표 테이블도 채워집니다."),
-                            ],
-                          ),
-                        ),
+                      const Icon(Icons.settings_suggest, size: 22),
+                      const SizedBox(width: 10),
+                      Text(
+                        'LocationX Manager',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(width: 12),
+                      if (selected != null) _statusChip(selected),
+                      const Spacer(),
+                      FilledButton.icon(
+                        onPressed: (st.discovering || st.busy) ? null : _discover,
+                        icon: const Icon(Icons.radar),
+                        label: Text(st.discovering ? 'Discovering…' : 'Discover (UDP)'),
+                      ),
+                      const SizedBox(width: 10),
+                      OutlinedButton.icon(
+                        onPressed: st.devices.isEmpty
+                            ? null
+                            : () {
+                                ref.read(devicesControllerProvider.notifier).clearDevices();
+                                ref.read(selectedDeviceIdProvider.notifier).state = null;
+                                setState(() => _status = null);
+                              },
+                        icon: const Icon(Icons.clear_all),
+                        label: const Text('Clear'),
                       ),
                     ],
                   ),
 
-                  // 2) 설치 방식
-                  ListView(
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("설치 방식", style: Theme.of(context).textTheme.titleMedium),
-                              const SizedBox(height: 8),
-                              RadioListTile<String>(
-                                value: 'single',
-                                groupValue: installMode,
-                                onChanged: working ? null : (v) => setState(() => installMode = v ?? 'single'),
-                                title: const Text("단일 Locator (Angle)"),
-                              ),
-                              RadioListTile<String>(
-                                value: 'multiple',
-                                groupValue: installMode,
-                                onChanged: working ? null : (v) => setState(() => installMode = v ?? 'multiple'),
-                                title: const Text("다중 Locator (Positioning)"),
-                              ),
-                              const SizedBox(height: 8),
-                              Text("현재 선택: ${installMode == 'single' ? 'Single' : 'Multiple'}"),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  const SizedBox(height: 14),
 
-                  // 3) 좌표 입력(다중)
-                  ListView(
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("다중 Locator 좌표 입력", style: Theme.of(context).textTheme.titleMedium),
-                              const SizedBox(height: 8),
-
-                              Row(
-                                children: [
-                                  const Text("Locator 개수: "),
-                                  const SizedBox(width: 8),
-                                  DropdownButton<int>(
-                                    value: locatorCount,
-                                    items: [2, 3, 4, 5, 6, 7, 8]
-                                        .map((n) => DropdownMenuItem(value: n, child: Text("$n")))
-                                        .toList(),
-                                    onChanged: working ? null : (v) => _setLocatorCount(v ?? 4),
-                                  ),
-                                  const Spacer(),
-                                  FilledButton.icon(
-                                    onPressed: working
-                                        ? null
-                                        : () {
-                                      final built = _buildPositioningJsonFromRows();
-                                      setState(() {
-                                        positioningJson = built;
-                                        msg = 'positioning_config.json 자동 생성됨 (locators=$locatorCount)';
-                                      });
-                                    },
-                                    icon: const Icon(Icons.auto_fix_high),
-                                    label: const Text("JSON 생성"),
-                                  ),
-                                ],
-                              ),
-
-                              const SizedBox(height: 10),
-
-                              // 테이블 형태 입력
-                              SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: DataTable(
-                                  columns: const [
-                                    DataColumn(label: Text("ID")),
-                                    DataColumn(label: Text("x")),
-                                    DataColumn(label: Text("y")),
-                                    DataColumn(label: Text("z")),
-                                    DataColumn(label: Text("ox")),
-                                    DataColumn(label: Text("oy")),
-                                    DataColumn(label: Text("oz")),
+                  // Main
+                  Expanded(
+                    child: Row(
+                      children: [
+                        // Left: Devices
+                        SizedBox(
+                          width: 520,
+                          child: _micaCard(
+                            padding: const EdgeInsets.all(14),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text('Devices', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      '(${devices.length}/${st.devices.length})',
+                                      style: Theme.of(context).textTheme.labelLarge?.copyWith(color: cs.onSurfaceVariant),
+                                    ),
                                   ],
-                                  rows: List.generate(locatorCount, (i) {
-                                    final r = rows[i];
-                                    return DataRow(
-                                      cells: [
-                                        DataCell(
-                                          SizedBox(
-                                            width: 220,
-                                            child: TextFormField(
-                                              initialValue: r.id,
-                                              onChanged: (v) => r.id = v.trim(),
-                                              decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                                            ),
-                                          ),
-                                        ),
-                                        _numCell(r.x, (v) => r.x = v),
-                                        _numCell(r.y, (v) => r.y = v),
-                                        _numCell(r.z, (v) => r.z = v),
-                                        _numCell(r.ox, (v) => r.ox = v),
-                                        _numCell(r.oy, (v) => r.oy = v),
-                                        _numCell(r.oz, (v) => r.oz = v),
-                                      ],
-                                    );
-                                  }),
                                 ),
-                              ),
-
-                              const SizedBox(height: 10),
-                              Text(
-                                installMode != 'multiple'
-                                    ? "현재 설치 방식이 Single 입니다. (Multiple을 선택하면 이 좌표가 사용됩니다.)"
-                                    : "Multiple 모드에서는 이 좌표/ID로 positioning_config.json이 생성되어 적용됩니다.",
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  // 4) MQTT 설정
-                  ListView(
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("MQTT 서버 설정", style: Theme.of(context).textTheme.titleMedium),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: TextField(
-                                      controller: mqttIpCtrl,
-                                      enabled: !working,
-                                      decoration: const InputDecoration(
-                                        labelText: "MQTT 서버 IP",
-                                        border: OutlineInputBorder(),
-                                        isDense: true,
-                                      ),
-                                    ),
+                                const SizedBox(height: 10),
+                                TextField(
+                                  controller: _searchCtrl,
+                                  decoration: InputDecoration(
+                                    prefixIcon: const Icon(Icons.search),
+                                    suffixIcon: _search.isEmpty
+                                        ? null
+                                        : IconButton(
+                                            tooltip: 'Clear',
+                                            onPressed: () => _searchCtrl.clear(),
+                                            icon: const Icon(Icons.close),
+                                          ),
+                                    hintText: 'Search by hostname / IP / MAC / MQTT…',
                                   ),
-                                  const SizedBox(width: 12),
-                                  SizedBox(
-                                    width: 160,
-                                    child: TextField(
-                                      controller: mqttPortCtrl,
-                                      enabled: !working,
-                                      decoration: const InputDecoration(
-                                        labelText: "Port",
-                                        border: OutlineInputBorder(),
-                                        isDense: true,
-                                      ),
-                                    ),
+                                ),
+                                const SizedBox(height: 10),
+                                if (st.error != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Text(st.error!, style: TextStyle(color: cs.error)),
                                   ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              const Text("이 값이 Pi의 mqtt_server_setting.txt(BROKER_HOST/PORT)에 반영됩니다."),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                                Expanded(
+                                  child: devices.isEmpty
+                                      ? Center(
+                                          child: Text(
+                                            'Discover(UDP)를 누르면 같은 LAN의 LocationX 장비가 응답합니다.\n\n'
+                                            '• 항목을 클릭하면 우측에서 설정\n'
+                                            '• 길게 누르면 Identify(LED 점멸)',
+                                            textAlign: TextAlign.center,
+                                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+                                          ),
+                                        )
+                                      : ListView.separated(
+                                          itemCount: devices.length,
+                                          separatorBuilder: (_, __) => const Divider(height: 10),
+                                          itemBuilder: (context, i) {
+                                            final d = devices[i];
+                                            final selectedTile = selected?.ip == d.ip;
+                                            final macLabel = (d.mac == null || d.mac!.isEmpty) ? 'N/A' : d.mac!;
+                                            final mqttLabel = ((d.mqttHost ?? '').trim().isEmpty || d.mqttPort == null)
+                                                ? '확인안됨'
+                                                : '${d.mqttHost}:${d.mqttPort}';
 
-                  // 5) 적용
-                  ListView(
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("Save + Apply", style: Theme.of(context).textTheme.titleMedium),
-                              const SizedBox(height: 8),
-                              Text("설치 방식: ${installMode == 'single' ? 'Single' : 'Multiple'}"),
-                              Text("MQTT(입력): ${mqttIpCtrl.text.trim().isEmpty ? '(미입력)' : mqttIpCtrl.text.trim()} : ${mqttPortCtrl.text.trim()}"),
-                              if (installMode == 'multiple')
-                                Text("Locators: $locatorCount (좌표/ID 기반 JSON 생성됨)"),
-                              const SizedBox(height: 12),
-                              FilledButton.icon(
-                                onPressed: canUse ? _saveApplyToPi : null,
-                                icon: const Icon(Icons.check_circle),
-                                label: Text(working ? "Working..." : "Apply (Save + Apply)"),
-                              ),
-                              const SizedBox(height: 8),
-                              const Text(
-                                "Apply는 Pi에서:\n"
-                                    "- mqtt_server_setting.txt 업데이트\n"
-                                    "- locator_config.json / positioning_config.json 교체 + backup\n"
-                                    "- aoa 스크립트 -m 패치\n"
-                                    "까지 반영됩니다.",
-                              ),
-                            ],
+                                            return InkWell(
+                                              borderRadius: BorderRadius.circular(12),
+                                              onTap: () => ref.read(selectedDeviceIdProvider.notifier).state = d.ip,
+                                              onLongPress: st.busy ? null : () => _identify(d),
+                                              child: Container(
+                                                decoration: BoxDecoration(
+                                                  color: selectedTile ? cs.primaryContainer.withOpacity(0.35) : cs.surfaceContainerHighest.withOpacity(0.35),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                  border: Border.all(color: cs.outlineVariant.withOpacity(0.28)),
+                                                ),
+                                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                                child: Row(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Padding(
+                                                      padding: const EdgeInsets.only(top: 2),
+                                                      child: _ledIndicator(d),
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Expanded(
+                                                      child: Column(
+                                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                        children: [
+                                                          Row(
+                                                            children: [
+                                                              Expanded(
+                                                                child: Text(
+                                                                  d.hostname,
+                                                                  maxLines: 1,
+                                                                  overflow: TextOverflow.ellipsis,
+                                                                  style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                                                                ),
+                                                              ),
+                                                              const SizedBox(width: 10),
+                                                              Text(
+                                                                d.fw,
+                                                                style: Theme.of(context).textTheme.labelMedium?.copyWith(color: cs.onSurfaceVariant),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                          const SizedBox(height: 6),
+                                                          Text(
+                                                            'IP: ${d.ip}   •   MAC: $macLabel',
+                                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                                                          ),
+                                                          const SizedBox(height: 4),
+                                                          Text(
+                                                            'MQTT(UDP): $mqttLabel',
+                                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
+                                                  ],
+                                                ),
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+
+                        const SizedBox(width: 16),
+
+                        // Right: Settings
+                        Expanded(
+                          child: _micaCard(
+                            padding: const EdgeInsets.all(0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+                                  child: Row(
+                                    children: [
+                                      Text(
+                                        'Device Settings',
+                                        style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                                      ),
+                                      const Spacer(),
+                                      if (selected != null)
+                                        Text(
+                                          '${selected.hostname}  (${selected.ip})',
+                                          style: Theme.of(context).textTheme.labelLarge?.copyWith(color: cs.onSurfaceVariant),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  child: TabBar(
+                                    controller: _tabs,
+                                    tabs: const [
+                                      Tab(text: 'MQTT'),
+                                      Tab(text: 'Actions'),
+                                      Tab(text: 'Details'),
+                                    ],
+                                  ),
+                                ),
+                                const Divider(height: 1),
+
+                                Expanded(
+                                  child: TabBarView(
+                                    controller: _tabs,
+                                    children: [
+                                      _MqttTab(
+                                        selected: selected,
+                                        hostCtrl: _mqttHostCtrl,
+                                        portCtrl: _mqttPortCtrl,
+                                        busy: st.busy,
+                                        onSend: (d) => _sendMqtt(d),
+                                      ),
+                                      _ActionsTab(
+                                        selected: selected,
+                                        busy: st.busy,
+                                        delayCtrl: _rebootDelayCtrl,
+                                        onIdentify: (d) => _identify(d),
+                                        onRestartService: (d) => _restartAoaService(d),
+                                        onReboot: (d) => _reboot(d),
+                                      ),
+                                      _DetailsTab(selected: selected),
+                                    ],
+                                  ),
+                                ),
+
+                                if (_status != null)
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 16),
+                                    child: _StatusBanner(text: _status!),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
             ),
-          ],
-        );
-      }),
-    );
-  }
-
-  // DataTable numeric cell
-  DataCell _numCell(double value, void Function(double) onSet) {
-    return DataCell(
-      SizedBox(
-        width: 80,
-        child: TextFormField(
-          initialValue: value.toString(),
-          keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-          onChanged: (v) {
-            final n = double.tryParse(v.trim());
-            if (n != null) onSet(n);
-          },
-          decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-        ),
+          ),
+        ],
       ),
     );
   }
+}
 
-  // mqtt helpers
-  String _normalizeLine(String s) => s.replaceAll('\r', '');
+class _MqttTab extends StatelessWidget {
+  final Device? selected;
+  final TextEditingController hostCtrl;
+  final TextEditingController portCtrl;
+  final bool busy;
+  final Future<void> Function(Device device) onSend;
 
-  String? _pickKv(String text, String key) {
-    final lines = _normalizeLine(text).split('\n');
-    for (final line in lines) {
-      final t = line.trim();
-      if (t.startsWith('#')) continue;
-      final idx = t.indexOf('=');
-      if (idx <= 0) continue;
-      final k = t.substring(0, idx).trim();
-      final v = t.substring(idx + 1).trim();
-      if (k == key) return v;
+  const _MqttTab({
+    required this.selected,
+    required this.hostCtrl,
+    required this.portCtrl,
+    required this.busy,
+    required this.onSend,
+  });
+
+  String _current(Device d) {
+    final h = (d.mqttHost ?? '').trim();
+    final p = d.mqttPort;
+    if (h.isEmpty || p == null) return '확인안됨';
+    return '$h:$p';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final d = selected;
+
+    if (d == null) {
+      return Center(
+        child: Text(
+          '좌측에서 장비를 선택하세요.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+        ),
+      );
     }
-    return null;
-  }
 
-  String _removeAllKeys(String text, Set<String> keys) {
-    final out = <String>[];
-    final lines = _normalizeLine(text).split('\n');
-    for (final line in lines) {
-      final raw = line;
-      final t = raw.trim();
-      if (t.isEmpty) {
-        out.add(raw);
-        continue;
-      }
-      if (t.startsWith('#')) {
-        out.add(raw);
-        continue;
-      }
-      final idx = t.indexOf('=');
-      if (idx <= 0) {
-        out.add(raw);
-        continue;
-      }
-      final k = t.substring(0, idx).trim();
-      if (keys.contains(k)) continue;
-      out.add(raw);
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        Text('MQTT (UDP)', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 6),
+        Text(
+          '현재 적용된 서버: ${_current(d)}',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: TextField(
+                controller: hostCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Broker Host',
+                  hintText: '예) aoa-server-1.local 또는 192.168.1.10',
+                  prefixIcon: Icon(Icons.dns),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: portCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Port',
+                  prefixIcon: Icon(Icons.numbers),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            FilledButton.icon(
+              onPressed: busy ? null : () => onSend(d),
+              icon: const Icon(Icons.save),
+              label: Text(busy ? 'Saving…' : 'Save MQTT (UDP)'),
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: () {
+                // 편의: 포트만 기본값으로
+                if (portCtrl.text.trim().isEmpty) portCtrl.text = '1883';
+              },
+              icon: const Icon(Icons.auto_fix_high),
+              label: const Text('Default Port'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          '• 저장만으로는 실행 중인 로케이터가 즉시 바뀌지 않습니다.\n'
+          '  적용하려면 “Actions” 탭에서 Restart AOA Service 또는 Reboot를 실행하세요.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+class _ActionsTab extends StatelessWidget {
+  final Device? selected;
+  final bool busy;
+  final TextEditingController delayCtrl;
+  final Future<void> Function(Device device) onIdentify;
+  final Future<void> Function(Device device) onRestartService;
+  final Future<void> Function(Device device) onReboot;
+
+  const _ActionsTab({
+    required this.selected,
+    required this.busy,
+    required this.delayCtrl,
+    required this.onIdentify,
+    required this.onRestartService,
+    required this.onReboot,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final d = selected;
+
+    if (d == null) {
+      return Center(
+        child: Text(
+          '좌측에서 장비를 선택하세요.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+        ),
+      );
     }
-    return out.join('\n').trimRight();
+
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        Text('Actions', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 14),
+        _ActionCard(
+          title: 'Identify (LED Blink)',
+          subtitle: '장비를 찾기 쉽게 LED 점멸을 실행합니다.',
+          icon: Icons.wifi_tethering,
+          primaryLabel: 'Run',
+          primaryEnabled: !busy,
+          onPrimary: () => onIdentify(d),
+        ),
+        const SizedBox(height: 12),
+        _ActionCard(
+          title: 'Restart AOA Service',
+          subtitle: 'sudo systemctl restart aoa-antenna.service',
+          icon: Icons.refresh,
+          primaryLabel: 'Restart',
+          primaryEnabled: !busy,
+          onPrimary: () => onRestartService(d),
+        ),
+        const SizedBox(height: 12),
+        _ActionCard(
+          title: 'Reboot Device',
+          subtitle: '전체 재부팅 (현장 운영 시 신중히).',
+          icon: Icons.restart_alt,
+          primaryLabel: 'Reboot',
+          primaryEnabled: !busy,
+          onPrimary: () => onReboot(d),
+          trailing: SizedBox(
+            width: 180,
+            child: TextField(
+              controller: delayCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Delay (sec)',
+                hintText: '0~30',
+                prefixIcon: Icon(Icons.timer),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DetailsTab extends StatelessWidget {
+  final Device? selected;
+  const _DetailsTab({required this.selected});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final d = selected;
+    if (d == null) {
+      return Center(
+        child: Text(
+          '좌측에서 장비를 선택하세요.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+        ),
+      );
+    }
+
+    final mqtt = ((d.mqttHost ?? '').trim().isEmpty || d.mqttPort == null) ? '확인안됨' : '${d.mqttHost}:${d.mqttPort}';
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        Text('Details', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 14),
+        _Kv('Hostname', d.hostname),
+        _Kv('IP', d.ip),
+        _Kv('MAC', (d.mac == null || d.mac!.isEmpty) ? 'N/A' : d.mac!),
+        _Kv('FW', d.fw),
+        _Kv('MQTT(UDP)', mqtt),
+        const SizedBox(height: 16),
+        Text(
+          '• Discover(UDP) 응답에 포함되는 MQTT 정보가 없으면 “확인안됨”으로 표시됩니다.\n'
+          '• MQTT 저장 후 적용하려면 Actions 탭에서 재시작/재부팅을 실행하세요.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+class _Kv extends StatelessWidget {
+  final String k;
+  final String v;
+  const _Kv(this.k, this.v);
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 110,
+            child: Text(k, style: Theme.of(context).textTheme.labelLarge?.copyWith(color: cs.onSurfaceVariant)),
+          ),
+          Expanded(
+            child: SelectableText(
+              v,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final String primaryLabel;
+  final bool primaryEnabled;
+  final VoidCallback onPrimary;
+  final Widget? trailing;
+
+  const _ActionCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.primaryLabel,
+    required this.primaryEnabled,
+    required this.onPrimary,
+    this.trailing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outlineVariant.withOpacity(0.28)),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 4),
+                Text(subtitle, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    FilledButton(
+                      onPressed: primaryEnabled ? onPrimary : null,
+                      child: Text(primaryLabel),
+                    ),
+                    if (trailing != null) ...[
+                      const SizedBox(width: 12),
+                      Expanded(child: trailing!),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusBanner extends StatelessWidget {
+  final String text;
+  const _StatusBanner({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isOk = text.contains('완료') || text.contains('저장 완료') || text.contains('예약됨');
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: (isOk ? cs.primaryContainer : cs.errorContainer).withOpacity(0.6),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.outlineVariant.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(isOk ? Icons.check_circle : Icons.error, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 아주 약한 "노이즈" 도트로 배경에 깊이감을 줌 (이미지/에셋 없이)
+class _NoiseOverlay extends StatelessWidget {
+  const _NoiseOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _NoisePainter(Theme.of(context).colorScheme.onSurface.withOpacity(0.03)),
+    );
+  }
+}
+
+class _NoisePainter extends CustomPainter {
+  final Color color;
+  _NoisePainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    // 규칙적인 도트(가벼운 텍스처). 성능 위해 간격 크게.
+    const step = 18.0;
+    for (double y = 0; y < size.height; y += step) {
+      for (double x = (y / step).floor() % 2 == 0 ? 0 : step / 2; x < size.width; x += step) {
+        canvas.drawCircle(Offset(x, y), 0.75, paint);
+      }
+    }
   }
 
-  String _ensureEndsWithNewline(String s) {
-    if (s.isEmpty) return '';
-    return s.endsWith('\n') ? s : '$s\n';
-  }
+  @override
+  bool shouldRepaint(covariant _NoisePainter oldDelegate) => oldDelegate.color != color;
 }
