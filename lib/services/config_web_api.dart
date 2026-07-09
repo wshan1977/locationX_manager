@@ -43,21 +43,27 @@ class ConfigWebApi {
         ).trim();
       }
 
-      return {
+      // config 서버 v2.0.0부터 locator_config.json 편집이 제거됨
+      // (서버 카드는 aoa-locator 비활성) — 없으면 키를 생략한다.
+      final result = {
         'mqtt': extract('mqtt'),
-        'locator': extract('locator'),
         'positioning': extract('positioning'),
       };
+      if (html.contains('<textarea name="locator">')) {
+        result['locator'] = extract('locator');
+      }
+      return result;
     } finally {
       client.close(force: true);
     }
   }
 
   /// POST /save
+  /// [locator]는 구버전(v1.x) 서버 전용 — v2.0.0+에서는 null로 두면 생략된다.
   Future<void> save({
     required String ip,
     required String mqtt,
-    required String locator,
+    String? locator,
     required String positioning,
   }) async {
     final client = _client();
@@ -71,7 +77,7 @@ class ConfigWebApi {
 
       req.write(Uri(queryParameters: {
         'mqtt': mqtt,
-        'locator': locator,
+        if (locator != null) 'locator': locator,
         'positioning': positioning,
       }).query);
 

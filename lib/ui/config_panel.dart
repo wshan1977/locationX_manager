@@ -21,6 +21,8 @@ class _ConfigPanelState extends ConsumerState<ConfigPanel> {
   bool loading = false;
   bool dirty = false;
   String? error;
+  // config 서버 v2.0.0+는 locator_config.json 편집이 없다 (서버 카드 aoa-locator 비활성).
+  bool hasLocator = false;
 
   @override
   void initState() {
@@ -54,9 +56,12 @@ class _ConfigPanelState extends ConsumerState<ConfigPanel> {
     try {
       final data = await api.load(dev.ip);
       mqttCtrl.text = data['mqtt']!;
-      locatorCtrl.text = data['locator']!;
+      locatorCtrl.text = data['locator'] ?? '';
       positioningCtrl.text = data['positioning']!;
-      setState(() => dirty = false);
+      setState(() {
+        hasLocator = data.containsKey('locator');
+        dirty = false;
+      });
     } catch (e) {
       setState(() => error = e.toString());
     } finally {
@@ -77,7 +82,7 @@ class _ConfigPanelState extends ConsumerState<ConfigPanel> {
       await api.save(
         ip: dev.ip,
         mqtt: mqttCtrl.text,
-        locator: locatorCtrl.text,
+        locator: hasLocator ? locatorCtrl.text : null,
         positioning: positioningCtrl.text,
       );
       setState(() => dirty = false);
@@ -177,7 +182,8 @@ class _ConfigPanelState extends ConsumerState<ConfigPanel> {
                 child: Column(
                   children: [
                     editor('mqtt_server_setting.txt', mqttCtrl),
-                    editor('locator_config.json (Single)', locatorCtrl),
+                    if (hasLocator)
+                      editor('locator_config.json (Single)', locatorCtrl),
                     editor('positioning_config.json (Multiple)', positioningCtrl),
                   ],
                 ),
